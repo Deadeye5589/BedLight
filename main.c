@@ -25,7 +25,8 @@
 #include <stdbool.h>
 
 //Defines
-#define ONTIME  10
+#define TRANSIONTIME  10 //Since system tick is about 100ms, this will give us a 1 second fade in or fade out duration
+#define HYSTERESIS 5	//Hysteresis for night time detection, will prevent flickering due to values near day / night border
 
 //Enumerations
 enum {CH1, CH2, CH3, CH4}; //ADC Channels Day/Night, Brightness, Duration, LDR
@@ -60,7 +61,7 @@ unsigned int helligkeit[128]={0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 4,
 	49, 51, 52, 54, 56, 58, 60, 62, 64, 66, 68, 70, 72, 75, 77, 79, 82, 84, 87, 89, 92,
 	94, 97, 100, 103, 105, 108, 111, 114, 117, 120, 124, 127, 130, 133, 137, 140, 144, 147,
 	151, 155, 158, 162, 166, 170, 174, 178, 182, 186, 190, 194, 199, 203, 208, 212, 217,
-	221, 226, 231, 236, 241, 246, 251, 256
+	221, 226, 231, 236, 241, 246, 251, 255
 };
 
 
@@ -71,7 +72,7 @@ void init_ports(void){
 	//Set pull-ups for inputs active = 1, disabled = 0 (default)
 	PORTB = 0b00000000;
 	PORTC = 0b00000000;
-	PORTD = 0b00000000;
+	PORTD = 0b00010000;
 
 	//Set direction output = 1, input = 0 (default)
 	DDRB = 0b11111011; 
@@ -88,13 +89,13 @@ void init_timers(void){
 	//PWM for LEDs left and right side 
 	OCR0A = 0;
 	OCR0B = 0;
-	TCCR0A = (1<<COM0A1) | (1<<COM0B1) | (1<<WGM01) | (1<<WGM00); //Set Fast PWM non inverting, enable OC0A & OC0B
-	TCCR0B = (1<<CS02); //256x Prescaler = 240Hz PWM
+	TCCR0A = (1<<COM0A1) | (1<<COM0B1) | (1<<WGM02) | (1<<WGM00); //Set Phase correct PWM non inverting, enable OC0A & OC0B
+	TCCR0B = (1<<CS02); //256x Prescaler = 120Hz PWM
 
 	//PWM for LEDs front side
 	OCR2A = 0;
-	TCCR2A = (1<<COM2A1) | (1<<WGM21) | (1<<WGM20); //Set Fast PWM non inverting, enable OC2A
-	TCCR2B = (1<<CS22) | (1<<CS21); //256x Prescaler = 240Hz PWM
+	TCCR2A = (1<<COM2A1) | (1<<WGM22) | (1<<WGM20); //Set Phase correct PWM non inverting, enable OC2A
+	TCCR2B = (1<<CS22) | (1<<CS21); //256x Prescaler = 120Hz PWM
 	
 	//Timer for system tick
 	ICR1 = 780;												  //Tick occurs every 100ms = 10Hz 
@@ -160,7 +161,11 @@ ISR(PCINT1_vect){
 }
 
 ISR(PCINT2_vect){
-	setup = 1;
+	if (setup == 0)
+	{
+		setup = 1;
+	}
+	
 }
 
 
@@ -198,14 +203,12 @@ unsigned int adc_conversion(int channel){
 _Bool is_night(void)
 {
 	uint8_t LDR = 0;
-	uint8_t Sensitivity = 0;
 	
 	LDR = adc_conversion(CH4);
-	Sensitivity = adc_conversion(CH3)-10; //tbd figure out of we need offset to adc value
 	
-	if (Sensitivity > 5 )		//Hystersis size	
+	if (switchingthreshold > HYSTERESIS )		//Hysteresis size	
 	{
-		if (LDR > Sensitivity)	//Only illuminate bed if it is dark enough
+		if (LDR > switchingthreshold)	//Only illuminate bed if it is dark enough
 		{
 			return true;
 		} 
@@ -223,12 +226,15 @@ _Bool is_night(void)
 
 int main(void)
 {	
+	//Local variables
 	uint8_t brightnessleft = 0;
 	uint8_t brightnessright = 0;
 	uint8_t brightnessfront = 0;
+	uint8_t stepwidth = 19;
+	uint8_t temp = 0;
 
-	duration = 20; //For testing only
-	brightness = 100;
+	duration = 200; //For testing only
+	brightness = 6;
 
 	cli();
     init_ports();
@@ -244,79 +250,134 @@ int main(void)
 				if(statusleft == fadein)
 				{
 					if(brightnessleft <= brightness){
-						brightnessleft += 16;
+						brightnessleft += stepwidth;
+						if(brightnessleft > 127)
+							brightnessleft = 127;
 						OCR0A = helligkeit[brightnessleft];
 					}
-					if(brightnessleft > brightness)
+					if((brightnessleft > brightness) || (brightnessleft == 127))
 					statusleft = glow;
 				}
 				else if(statusleft == glow){
 					if(runleft > 0)
 						runleft--;
 					else statusleft = fadeout;
-
 				}
 				else if(statusleft == fadeout ){
-					if(brightnessleft > 0){
-						brightnessleft -= 16;
+					if(brightnessleft > stepwidth){
+						brightnessleft -= stepwidth;
 						OCR0A = helligkeit[brightnessleft];
 					}
-					if(brightnessleft <= 0)
-					statusleft = idle;
+					else{
+						brightnessleft = 0;
+						OCR0A = helligkeit[brightnessleft];
+						statusleft = idle;
+					}
 				}
+
 
 				if(statusright == fadein)
 				{
 					if(brightnessright <= brightness){
-						brightnessright += 16;
+						brightnessright += stepwidth;
+						if(brightnessright > 127)
+							brightnessright = 127;
 						OCR0B = helligkeit[brightnessright];
 					}
-					if(brightnessright > brightness)
+					if((brightnessright > brightness) || (brightnessright == 127))
 					statusright = glow;
 				}
 				else if(statusright == glow){
 					if(runright > 0)
 						runright--;
 					else statusright = fadeout;
-
 				}
 				else if(statusright == fadeout ){
-					if(brightnessright > 0){
-						brightnessright -= 16;
+					if(brightnessright > stepwidth){
+						brightnessright -= stepwidth;
 						OCR0B = helligkeit[brightnessright];
 					}
-					if(brightnessright <= 0)
-					statusright = idle;
+					else{
+						brightnessright = 0;
+						OCR0B = helligkeit[brightnessright];
+						statusright = idle;
+					}
 				}
+
 
 				if(statusfront == fadein)
 				{
 					if(brightnessfront <= brightness){
-						brightnessfront += 16;
+						brightnessfront += stepwidth;
+						if(brightnessfront > 127)
+							brightnessfront = 127;
 						OCR2A = helligkeit[brightnessfront];
 					}
-					if(brightnessfront > brightness)
+					if((brightnessfront > brightness) || (brightnessfront == 127))
 					statusfront = glow;
 				}
 				else if(statusfront == glow){
 					if(runfront > 0)
 						runfront--;
 					else statusfront = fadeout;
-
 				}
 				else if(statusfront == fadeout ){
-					if(brightnessfront > 0){
-						brightnessfront -= 16;
+					if(brightnessfront > stepwidth){
+						brightnessfront -= stepwidth;
 						OCR2A = helligkeit[brightnessfront];
 					}
-					if(brightnessfront <= 0)
-					statusfront = idle;
+					else{
+						brightnessfront = 0;
+						OCR2A = helligkeit[brightnessfront];
+						statusfront = idle;
+					}
 				}
+				
 		}
 
 		if(setup){
+			PORTB |= (1<<PB5);
+			_delay_ms(100);
+			PORTB &= ~(1<<PB5);
+			setup = 0;
+			while(setup == 0)
+			{
+				temp = adc_conversion(CH1);
+				brightness = temp / 2;
+				switchingthreshold = adc_conversion(CH3);
+				temp = adc_conversion(CH4);
+				if (switchingthreshold < temp)
+				{
+					OCR0A = helligkeit[brightness];
+					OCR0B = helligkeit[brightness];
+					OCR2A = helligkeit[brightness];
+				} 
+				else
+				{
+					OCR0A = 0;
+					OCR0B = 0;
+					OCR2A = 0;
+				}	
+			}
+			stepwidth = brightness / TRANSIONTIME; //Step width is used for Fade-In or Fade-Out animations. 
+			if(stepwidth == 0)
+				stepwidth = 1;
+			PORTB |= (1<<PB5);
+			_delay_ms(100);
+			PORTB &= ~(1<<PB5);
+			_delay_ms(100);
+			PORTB |= (1<<PB5);
+			_delay_ms(100);
+			PORTB &= ~(1<<PB5);
 			setup = 0;
 		}
     }
 }
 
+
+/*
+Poti1   0	ff
+Poti2   0	ff
+Poti3   0	ff
+LDR	(7) 11	90 (FF)
+*/
