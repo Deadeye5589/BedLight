@@ -23,6 +23,7 @@
 #include <avr/interrupt.h>
 #include <util/delay.h>
 #include <stdbool.h>
+#include <avr/eeprom.h>
 
 //Defines
 #define TRANSIONTIME  10 //Since system tick is about 100ms, this will give us a 1 second fade in or fade out duration
@@ -45,6 +46,11 @@ volatile uint8_t runright = 0;
 volatile uint8_t runfront = 0;
 volatile uint8_t setup = 0;
 volatile uint8_t night = 0;
+
+//EEPROM variables
+uint8_t eeDuration EEMEM = 0;
+uint8_t eeBrightness EEMEM = 0;
+uint8_t eeThreshold EEMEM = 0;
 
 //Function declarations
 void init_ports(void);
@@ -161,9 +167,11 @@ ISR(PCINT1_vect){
 }
 
 ISR(PCINT2_vect){
-	if (setup == 0)
+	if (!(PIND & (1<<PIND4)))	//Since we have a pin change interrupt we check for low level and only then do our stuff
 	{
-		setup = 1;
+		setup++;				//Cycle through the setup phased with each new press of the button
+		if (setup > 3)
+		setup = 0;
 	}
 	
 }
@@ -233,8 +241,10 @@ int main(void)
 	uint8_t stepwidth = 19;
 	uint8_t temp = 0;
 
-	duration = 200; //For testing only
-	brightness = 6;
+	//Read values stores in EEPROM upon reset, no need to do the setup each time we unplug the controller
+	duration = eeprom_read_byte(&eeDuration);
+	brightness = eeprom_read_byte(&eeBrightness);
+	switchingthreshold = eeprom_read_byte(&eeThreshold);
 
 	cli();
     init_ports();
@@ -244,38 +254,40 @@ int main(void)
 	sei();
     while (1) 
     {
-		night = is_night();
-		if(tick){
-			tick = 0;
-				if(statusleft == fadein)
+		night = is_night();		//Check if it dark enough to illuminate
+		if(tick){				//Execute the state machine every 100ms
+			tick = 0;			//Reset the tick for the next 100ms
+			
+				//State machine for the left side
+				if(statusleft == fadein)		//If we are in idle fade in to maximum brightness
 				{
-					if(brightnessleft <= brightness){
-						brightnessleft += stepwidth;
-						if(brightnessleft > 127)
+					if(brightnessleft <= brightness){	//Fade in as long as the current brightness for this side is beneath the global brightness 
+						brightnessleft += stepwidth;	//Step width is calculated inside the setup routine
+						if(brightnessleft > 127)		//Limit brightness to the size for of our Linearization array
 							brightnessleft = 127;
-						OCR0A = helligkeit[brightnessleft];
+						OCR0A = helligkeit[brightnessleft];	//Set the PWM 
 					}
-					if((brightnessleft > brightness) || (brightnessleft == 127))
-					statusleft = glow;
+					if((brightnessleft > brightness) || (brightnessleft == 127)) //The fade in is finished when we have reached the overall brightness or if we reach the end of the Linearization array
+					statusleft = glow;			
 				}
-				else if(statusleft == glow){
-					if(runleft > 0)
+				else if(statusleft == glow){	//Now that we reached the desired brightness keep the lights on for the set duration
+					if(runleft > 0)				//Decrease the run variable with each timer tick. A retrigger of the motion sensor resets the run variable and prolongs the on time
 						runleft--;
-					else statusleft = fadeout;
+					else statusleft = fadeout;	//The duration was long enough we can proceed to fade out the lights
 				}
-				else if(statusleft == fadeout ){
-					if(brightnessleft > stepwidth){
+				else if(statusleft == fadeout ){			//Now fadeout with each timer tick one step at a time
+					if(brightnessleft > stepwidth){			//Take care that the next subtraction will not lead to negative values or we are out of bound of the Linearization array
 						brightnessleft -= stepwidth;
 						OCR0A = helligkeit[brightnessleft];
 					}
-					else{
-						brightnessleft = 0;
+					else{									//Since the previous subtraction would have resulted in negative values we take care of this
+						brightnessleft = 0;					//and set the brightness of this side back to 0. This is also the right value to start the fade in next ime
 						OCR0A = helligkeit[brightnessleft];
-						statusleft = idle;
+						statusleft = idle;					//We can go back to idle and wait for the next motion sensor trigger event
 					}
 				}
 
-
+				//State machine for the right side
 				if(statusright == fadein)
 				{
 					if(brightnessright <= brightness){
@@ -305,6 +317,7 @@ int main(void)
 				}
 
 
+				//State machine for the front, which also lights up the matching side of the bed
 				if(statusfront == fadein)
 				{
 					if(brightnessfront <= brightness){
@@ -335,18 +348,20 @@ int main(void)
 				
 		}
 
-		if(setup){
+
+		//State machine for the general setup process
+		if(setup == 1){				//We have entered the setup routine
 			PORTB |= (1<<PB5);
-			_delay_ms(100);
+			_delay_ms(200);			//Single blink of the LED to indicate a correct push of the setup button
 			PORTB &= ~(1<<PB5);
-			setup = 0;
-			while(setup == 0)
+			setup = 2;
+			while(setup == 2)		//We can now set the overall brightness  and the day / night boundary
 			{
-				temp = adc_conversion(CH1);
-				brightness = temp / 2;
-				switchingthreshold = adc_conversion(CH3);
-				temp = adc_conversion(CH4);
-				if (switchingthreshold < temp)
+				temp = adc_conversion(CH1);			//CH1 is the poti for brightness 
+				brightness = temp / 2;				//Devide value by 2 since the poti gives us FF as maxium value but or Linearization array is only 128 values
+				switchingthreshold = adc_conversion(CH2);	//Now read the CH2 poti to determine the day / night boundry
+				temp = adc_conversion(CH4);			//Also read out the LDR value right now. 
+				if (switchingthreshold < temp)		//If the LDR values is bigger than the switching threshold turn led strips on. Attention the LDR will give us lower values the darker it gets
 				{
 					OCR0A = helligkeit[brightness];
 					OCR0B = helligkeit[brightness];
@@ -358,18 +373,56 @@ int main(void)
 					OCR0B = 0;
 					OCR2A = 0;
 				}	
-			}
+			}					//Upon press of the setup button we will leave the loop and proceed with our setup
 			stepwidth = brightness / TRANSIONTIME; //Step width is used for Fade-In or Fade-Out animations. 
-			if(stepwidth == 0)
+			if(stepwidth == 0)		//Since we need to substract or add setp width during the animations a value of 0 does not make sense
 				stepwidth = 1;
-			PORTB |= (1<<PB5);
-			_delay_ms(100);
+			PORTB |= (1<<PB5);	 //Double blink LED to indicate next setup step
+			_delay_ms(200);
 			PORTB &= ~(1<<PB5);
-			_delay_ms(100);
+			_delay_ms(200);
 			PORTB |= (1<<PB5);
-			_delay_ms(100);
+			_delay_ms(200);
 			PORTB &= ~(1<<PB5);
-			setup = 0;
+			OCR0A = 0;			//Just make sure that the stripes are off before we proceed with the setup
+			OCR0B = 0;
+			OCR2A = 0;
+			while(setup == 3)	//Now we somehow set the duration by indicating the poti setting through blinking stripes
+			{
+				duration = adc_conversion(CH3);	//Read the CH3 poti as value for the duration phase of the illumination
+				OCR0A = helligkeit[brightness];
+				OCR0B = helligkeit[brightness];
+				OCR2A = helligkeit[brightness];
+				while(duration--){				
+					_delay_ms(1);	//We only delay a 100th of the actual system tick. So the duration during setup is a hundred times faster
+				}
+				OCR0A = 0;
+				OCR0B = 0;
+				OCR2A = 0;
+				while(duration--){
+					_delay_ms(1);
+				}
+			}		//Again on the press of the setup button we will leave the loop and finish with our setup
+			PORTB |= (1<<PB5);		//Tripple blink LED to indicate that setup is finished
+			_delay_ms(200);
+			PORTB &= ~(1<<PB5);
+			_delay_ms(200);
+			PORTB |= (1<<PB5);
+			_delay_ms(200);
+			PORTB &= ~(1<<PB5);
+			_delay_ms(200);
+			PORTB |= (1<<PB5);
+			_delay_ms(200);
+			PORTB &= ~(1<<PB5);
+			OCR0A = 0;			//Make sure that all strips are turned off 
+			OCR0B = 0;
+			OCR2A = 0;
+			cli();				//Store values into EEPROM if they have changed and make sure that interrupts will no disturb this process
+			eeprom_update_byte(&eeDuration, duration);		
+			eeprom_update_byte(&eeBrightness, brightness);
+			eeprom_update_byte(&eeThreshold, switchingthreshold);
+			sei();
+			setup = 0;			//Setup if finished and can be restarted upon press of the button
 		}
     }
 }
