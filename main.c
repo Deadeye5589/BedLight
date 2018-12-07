@@ -131,40 +131,42 @@ void init_interrupts(void){
 
 
 ISR(INT0_vect){
-	if(statusleft == idle && night){
-		statusleft = fadein;
-	}
-	runleft = duration;
-}
-
-ISR(INT1_vect){
 	if(statusright == idle && night){
 		statusright = fadein;
 	}
 	runright = duration;
 }
 
-ISR(PCINT0_vect){
+ISR(INT1_vect){
 	if(statusleft == idle && night){
 		statusleft = fadein;
+	}
+	runleft = duration;
+}
+
+
+ISR(PCINT0_vect){
+	if(statusright == idle && night){
+		statusright = fadein;
 	}
 	if(statusfront == idle && night){
 		statusfront = fadein;
 	}
-	runleft = duration;
+	runright = duration;
 	runfront = duration;
 }
 
 ISR(PCINT1_vect){
-	if(statusright == idle && night){
-		statusright = fadein;
+	if(statusleft == idle && night){
+		statusleft = fadein;
 	}
 	if(statusfront == idle && night){
 		statusfront = fadein;
 	}
-	runright = duration;
+	runleft = duration;
 	runfront = duration;
 }
+
 
 ISR(PCINT2_vect){
 	if (!(PIND & (1<<PIND4)))	//Since we have a pin change interrupt we check for low level and only then do our stuff
