@@ -24,6 +24,7 @@
 #include <util/delay.h>
 #include <stdbool.h>
 #include <avr/eeprom.h>
+#include <util/delay.h>
 
 //Defines
 #define TRANSIONTIME  10 //Since system tick is about 100ms, this will give us a 1 second fade in or fade out duration
@@ -169,6 +170,7 @@ ISR(PCINT1_vect){
 
 
 ISR(PCINT2_vect){
+	_delay_ms(20);
 	if (!(PIND & (1<<PIND4)))	//Since we have a pin change interrupt we check for low level and only then do our stuff
 	{
 		setup++;				//Cycle through the setup phased with each new press of the button
@@ -392,16 +394,17 @@ int main(void)
 			while(setup == 3)	//Now we somehow set the duration by indicating the poti setting through blinking stripes
 			{
 				duration = adc_conversion(CH3);	//Read the CH3 poti as value for the duration phase of the illumination
+				temp = duration;
 				OCR0A = helligkeit[brightness];
 				OCR0B = helligkeit[brightness];
 				OCR2A = helligkeit[brightness];
-				while(duration--){				
+				while(temp--){				
 					_delay_ms(1);	//We only delay a 100th of the actual system tick. So the duration during setup is a hundred times faster
 				}
 				OCR0A = 0;
 				OCR0B = 0;
 				OCR2A = 0;
-				while(duration--){
+				while(temp--){
 					_delay_ms(1);
 				}
 			}		//Again on the press of the setup button we will leave the loop and finish with our setup
